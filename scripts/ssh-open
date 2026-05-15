@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${SSH_OPEN_PORT:-18766}"
+path=$(realpath "${1:-.}")
+
+if curl -sf -X POST "http://localhost:${PORT}/api/set-path" -d "path=${path}" > /dev/null; then
+  echo "ssh-open: ${path}"
+else
+  echo "ssh-open: failed to connect to localhost:${PORT}" >&2
+  exit 1
+fi

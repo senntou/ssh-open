@@ -1,0 +1,358 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  height: 44px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.logo {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.crumb {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.crumb:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+.crumbSep {
+  color: var(--border);
+  padding: 0 1px;
+}
+
+.flash {
+  color: var(--accent);
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  flex-shrink: 0;
+}
+.flashActive {
+  opacity: 1;
+}
+
+.viewToggle {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.viewToggle button {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 16px;
+  color: var(--text-dim);
+  transition: background 0.1s, color 0.1s;
+}
+.viewToggle button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.viewToggle button.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.helpBtn {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.helpBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Body ── */
+.body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.panel {
+  flex: 1;
+  overflow-y: auto;
+  transition: flex 0.2s;
+}
+.panelNarrow {
+  flex: 0 0 320px;
+  border-right: 1px solid var(--border);
+}
+
+/* ── File list ── */
+.fileList {
+  padding: 4px 0;
+}
+
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background 0.08s;
+  user-select: none;
+}
+.fileRow:hover {
+  background: var(--surface-hover);
+}
+.selectedRow {
+  background: var(--accent-dim) !important;
+}
+.cursorRow {
+  background: var(--surface-hover) !important;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.dirRow .fileName {
+  color: var(--dir-color);
+}
+
+.iconDir  { color: var(--dir-color); font-size: 10px; flex-shrink: 0; }
+.iconImg  { color: var(--img-color); font-size: 12px; flex-shrink: 0; }
+.iconFile { color: var(--text-dim);  font-size: 14px; flex-shrink: 0; }
+
+.fileName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fileSize {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ── Gallery ── */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+
+.thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 6px;
+  border: 2px solid transparent;
+  transition: border-color 0.1s, background 0.1s;
+}
+.thumb:hover {
+  background: var(--surface-hover);
+}
+.thumbSelected {
+  border-color: var(--accent);
+}
+.thumb img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--surface);
+}
+.thumb span {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-dim);
+  padding: 40px;
+}
+
+/* ── Preview ── */
+.preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.previewHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.previewName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.previewSize {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.closeBtn {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.1s, color 0.1s;
+}
+.closeBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.previewImg {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.previewImg img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.navBtn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 32px;
+  color: var(--text-dim);
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: rgba(26, 27, 30, 0.7);
+  transition: color 0.1s, background 0.1s;
+  z-index: 1;
+}
+.navBtn:hover {
+  color: var(--text);
+  background: rgba(26, 27, 30, 0.95);
+}
+.navBtn:first-child { left: 8px; }
+.navBtn:last-child  { right: 8px; }
+
+.previewFooter {
+  text-align: center;
+  padding: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Help modal ── */
+.helpOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.helpModal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 360px;
+  max-width: 480px;
+}
+
+.helpHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.helpHeader button {
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.1s, color 0.1s;
+}
+.helpHeader button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.helpTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.helpTable td {
+  padding: 5px 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.helpTable td:first-child {
+  white-space: nowrap;
+}
+
+.helpTable tr:hover td {
+  color: var(--text);
+}
+
+.helpTable kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--accent);
+}

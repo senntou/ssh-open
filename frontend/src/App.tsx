@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import ReactMarkdown from 'react-markdown'
 import styles from './App.module.css'
 
 interface FileEntry {
@@ -12,6 +13,7 @@ interface FileEntry {
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.avif'])
 const PDF_EXTS = new Set(['.pdf'])
 const HTML_EXTS = new Set(['.html', '.htm'])
+const MD_EXTS = new Set(['.md', '.mdx', '.markdown'])
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
@@ -30,8 +32,12 @@ function isHtml(name: string): boolean {
   return HTML_EXTS.has(extOf(name))
 }
 
+function isMd(name: string): boolean {
+  return MD_EXTS.has(extOf(name))
+}
+
 function isPreviewable(name: string): boolean {
-  return isImage(name) || isPdf(name) || isHtml(name)
+  return isImage(name) || isPdf(name) || isHtml(name) || isMd(name)
 }
 
 function formatSize(size: number): string {
@@ -72,6 +78,7 @@ function FileIcon({ entry }: { entry: FileEntry }) {
   if (isImage(entry.name)) return <span className={styles.iconImg}>◈</span>
   if (isPdf(entry.name)) return <span className={styles.iconPdf}>⊠</span>
   if (isHtml(entry.name)) return <span className={styles.iconHtml}>⊞</span>
+  if (isMd(entry.name)) return <span className={styles.iconMd}>❡</span>
   return <span className={styles.iconFile}>·</span>
 }
 
@@ -121,6 +128,8 @@ export default function App() {
   const [flashPath, setFlashPath] = useState(false)
   const [cursorIndex, setCursorIndex] = useState(-1)
   const [showHelp, setShowHelp] = useState(false)
+  const [mdContent, setMdContent] = useState<string | null>(null)
+  const [mdTheme, setMdTheme] = useState<'dark' | 'light' | 'academic' | 'pop'>('dark')
   const prevPathRef = useRef('')
   const upRowRef = useRef<HTMLDivElement>(null)
   const rowRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -166,6 +175,17 @@ export default function App() {
     setCursorIndex(-1)
     rowRefs.current = []
   }, [currentPath])
+
+  useEffect(() => {
+    if (selected && isMd(selected.name)) {
+      setMdContent(null)
+      fetch(fileUrl(selected.path))
+        .then(r => r.text())
+        .then(setMdContent)
+    } else {
+      setMdContent(null)
+    }
+  }, [selected])
 
   useEffect(() => {
     if (cursorIndex === -1) {
@@ -346,6 +366,17 @@ export default function App() {
             <div className={styles.previewHeader}>
               <span className={styles.previewName}>{selected.name}</span>
               <span className={styles.previewSize}>{formatSize(selected.size)}</span>
+              {isMd(selected.name) && (
+                <div className={styles.mdThemeToggle}>
+                  {(['dark', 'light', 'academic', 'pop'] as const).map(t => (
+                    <button
+                      key={t}
+                      className={mdTheme === t ? styles.active : ''}
+                      onClick={() => setMdTheme(t)}
+                    >{t}</button>
+                  ))}
+                </div>
+              )}
               <button className={styles.closeBtn} onClick={() => setSelected(null)}>✕</button>
             </div>
             {isImage(selected.name) ? (
@@ -359,6 +390,13 @@ export default function App() {
                   {imageFiles.findIndex(f => f.path === selected.path) + 1} / {imageFiles.length}
                 </div>
               </>
+            ) : isMd(selected.name) ? (
+              <div className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]}`}>
+                {mdContent === null
+                  ? <span className={styles.mdLoading}>loading…</span>
+                  : <ReactMarkdown>{mdContent}</ReactMarkdown>
+                }
+              </div>
             ) : (
               <iframe
                 className={styles.previewFrame}

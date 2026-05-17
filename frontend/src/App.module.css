@@ -145,6 +145,8 @@
 
 .iconDir  { color: var(--dir-color); font-size: 10px; flex-shrink: 0; }
 .iconImg  { color: var(--img-color); font-size: 12px; flex-shrink: 0; }
+.iconPdf  { color: #e06c75;          font-size: 12px; flex-shrink: 0; }
+.iconHtml { color: #e5c07b;          font-size: 12px; flex-shrink: 0; }
 .iconFile { color: var(--text-dim);  font-size: 14px; flex-shrink: 0; }
 
 .fileName {
@@ -278,6 +280,13 @@
 }
 .navBtn:first-child { left: 8px; }
 .navBtn:last-child  { right: 8px; }
+
+.previewFrame {
+  flex: 1;
+  border: none;
+  width: 100%;
+  background: white;
+}
 
 .previewFooter {
   text-align: center;

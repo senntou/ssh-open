@@ -10,6 +10,8 @@ interface FileEntry {
 }
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.avif'])
+const PDF_EXTS = new Set(['.pdf'])
+const HTML_EXTS = new Set(['.html', '.htm'])
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
@@ -18,6 +20,18 @@ function extOf(name: string): string {
 
 function isImage(name: string): boolean {
   return IMAGE_EXTS.has(extOf(name))
+}
+
+function isPdf(name: string): boolean {
+  return PDF_EXTS.has(extOf(name))
+}
+
+function isHtml(name: string): boolean {
+  return HTML_EXTS.has(extOf(name))
+}
+
+function isPreviewable(name: string): boolean {
+  return isImage(name) || isPdf(name) || isHtml(name)
 }
 
 function formatSize(size: number): string {
@@ -56,6 +70,8 @@ function Breadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: string
 function FileIcon({ entry }: { entry: FileEntry }) {
   if (entry.isDir) return <span className={styles.iconDir}>▶</span>
   if (isImage(entry.name)) return <span className={styles.iconImg}>◈</span>
+  if (isPdf(entry.name)) return <span className={styles.iconPdf}>⊠</span>
+  if (isHtml(entry.name)) return <span className={styles.iconHtml}>⊞</span>
   return <span className={styles.iconFile}>·</span>
 }
 
@@ -64,7 +80,7 @@ const HELP_ROWS: [string, string][] = [
   ['k / ↑', 'カーソルを上に移動'],
   ['g', 'リスト先頭へ'],
   ['G', 'リスト末尾へ'],
-  ['o', '画像をプレビュー'],
+  ['o', 'ファイルをプレビュー'],
   ['Enter / l / →', 'ディレクトリを開く'],
   ['h / ← / BS', '親ディレクトリへ'],
   ['v / Tab', 'リスト / ギャラリー切り替え'],
@@ -177,7 +193,7 @@ export default function App() {
   const navigateEntry = useCallback((entry: FileEntry) => {
     if (entry.isDir) {
       navigateTo(entry.path)
-    } else if (isImage(entry.name)) {
+    } else if (isPreviewable(entry.name)) {
       setSelected(entry)
     }
   }, [navigateTo])
@@ -211,7 +227,7 @@ export default function App() {
         case 'o': {
           if (cursorIndex >= 0) {
             const entry = files[cursorIndex]
-            if (entry && isImage(entry.name)) setSelected(entry)
+            if (entry && isPreviewable(entry.name)) setSelected(entry)
           }
           return
         }
@@ -332,14 +348,25 @@ export default function App() {
               <span className={styles.previewSize}>{formatSize(selected.size)}</span>
               <button className={styles.closeBtn} onClick={() => setSelected(null)}>✕</button>
             </div>
-            <div className={styles.previewImg}>
-              <button className={styles.navBtn} onClick={() => cycleImage(-1)}>‹</button>
-              <img src={fileUrl(selected.path)} alt={selected.name} />
-              <button className={styles.navBtn} onClick={() => cycleImage(1)}>›</button>
-            </div>
-            <div className={styles.previewFooter}>
-              {imageFiles.findIndex(f => f.path === selected.path) + 1} / {imageFiles.length}
-            </div>
+            {isImage(selected.name) ? (
+              <>
+                <div className={styles.previewImg}>
+                  <button className={styles.navBtn} onClick={() => cycleImage(-1)}>‹</button>
+                  <img src={fileUrl(selected.path)} alt={selected.name} />
+                  <button className={styles.navBtn} onClick={() => cycleImage(1)}>›</button>
+                </div>
+                <div className={styles.previewFooter}>
+                  {imageFiles.findIndex(f => f.path === selected.path) + 1} / {imageFiles.length}
+                </div>
+              </>
+            ) : (
+              <iframe
+                className={styles.previewFrame}
+                src={fileUrl(selected.path)}
+                title={selected.name}
+                sandbox={isHtml(selected.name) ? 'allow-same-origin allow-scripts allow-forms' : undefined}
+              />
+            )}
           </div>
         )}
       </div>

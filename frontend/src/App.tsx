@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import styles from './App.module.css'
@@ -41,6 +41,17 @@ function fileUrl(path: string): string {
   return `/api/file?path=${encodeURIComponent(path)}`
 }
 
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+  const idx = text.toLowerCase().indexOf(query.toLowerCase())
+  if (idx === -1) return <>{text}</>
+  return <>
+    {text.slice(0, idx)}
+    <mark className={styles.queryHighlight}>{text.slice(idx, idx + query.length)}</mark>
+    {text.slice(idx + query.length)}
+  </>
+}
+
 function Breadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: string) => void }) {
   const parts = path.split('/').filter(Boolean)
   return (
@@ -69,10 +80,13 @@ function FileIcon({ entry }: { entry: FileEntry }) {
 }
 
 const HELP_ROWS: [string, string][] = [
-  ['j / ↓', 'カーソルを下に移動'],
-  ['k / ↑', 'カーソルを上に移動'],
+  ['j / ↓', 'カーソルを下に移動（末尾で折り返し）'],
+  ['k / ↑', 'カーソルを上に移動（先頭で折り返し）'],
   ['g', 'リスト先頭へ'],
   ['G', 'リスト末尾へ'],
+  ['/', '検索（カーソルジャンプ、Enter確定/Escキャンセル）'],
+  ['n / N', '(検索確定後) 次 / 前のマッチへ'],
+  ['f', 'フィルター（マッチのみ表示、Enter確定/Escクリア）'],
   ['o / Enter', 'ファイルをタブで開く'],
   ['l / → / Enter', '(ディレクトリ) 中に入る'],
   ['h / ← / BS', '親ディレクトリへ'],
@@ -214,19 +228,41 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false)
   const [mdContents, setMdContents] = useState<Record<string, string | null>>({})
   const [mdTheme, setMdTheme] = useState<'dark' | 'light' | 'academic' | 'pop'>('light')
+  const [query, setQuery] = useState('')
+  const [queryMode, setQueryMode] = useState<'search' | 'filter' | null>(null)
+  const [activeFilter, setActiveFilter] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
+  const queryInputRef = useRef<HTMLInputElement>(null)
+  const savedCursorRef = useRef<number>(-1)
   const prevPathRef = useRef('')
   const fetchedMd = useRef<Set<string>>(new Set())
   const upRowRef = useRef<HTMLDivElement>(null)
   const rowRefs = useRef<(HTMLDivElement | null)[]>([])
 
-  const loadFiles = useCallback(async (path: string) => {
+  const displayedFiles = useMemo(() => {
+    const q = queryMode === 'filter' ? query : activeFilter
+    if (!q) return files
+    const lq = q.toLowerCase()
+    return files.filter(f => f.name.toLowerCase().includes(lq))
+  }, [files, query, queryMode, activeFilter])
+
+  const highlightQuery = queryMode !== null ? query : activeFilter || activeSearch
+
+  const loadFiles = useCallback(async (path: string, focusName?: string) => {
     const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`)
-    if (res.ok) setFiles(await res.json())
+    if (res.ok) {
+      const newFiles: FileEntry[] = await res.json()
+      setFiles(newFiles)
+      if (focusName) {
+        const idx = newFiles.findIndex(f => f.name === focusName)
+        if (idx !== -1) setCursorIndex(idx)
+      }
+    }
   }, [])
 
-  const navigateTo = useCallback((path: string) => {
+  const navigateTo = useCallback((path: string, focusName?: string) => {
     setCurrentPath(path)
-    loadFiles(path)
+    loadFiles(path, focusName)
   }, [loadFiles])
 
   useEffect(() => {
@@ -255,8 +291,31 @@ export default function App() {
 
   useEffect(() => {
     setCursorIndex(-1)
+    setQuery('')
+    setQueryMode(null)
+    setActiveFilter('')
     rowRefs.current = []
   }, [currentPath])
+
+  // Jump cursor to first match when typing in search mode
+  useEffect(() => {
+    if (queryMode !== 'search' || !query) return
+    const idx = files.findIndex(f => f.name.toLowerCase().includes(query.toLowerCase()))
+    if (idx !== -1) setCursorIndex(idx)
+  }, [query, queryMode, files])
+
+  // Reset cursor when filter query changes
+  useEffect(() => {
+    if (queryMode === 'filter') setCursorIndex(-1)
+  }, [query, queryMode])
+
+  // Focus query input when mode activates (setTimeout to avoid the trigger key being typed in)
+  useEffect(() => {
+    if (queryMode !== null) {
+      const t = setTimeout(() => queryInputRef.current?.focus(), 0)
+      return () => clearTimeout(t)
+    }
+  }, [queryMode])
 
   useEffect(() => {
     for (const t of tabs) {
@@ -308,8 +367,10 @@ export default function App() {
   }, [tabs])
 
   const navigateUp = useCallback(() => {
-    const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
-    navigateTo(parent)
+    const parts = currentPath.split('/').filter(Boolean)
+    const dirName = parts.length > 0 ? parts[parts.length - 1] : undefined
+    const parent = parts.slice(0, -1).join('/') || '/'
+    navigateTo(parent, dirName)
   }, [currentPath, navigateTo])
 
   const imageFiles = files.filter(f => !f.isDir && isImage(f.name))
@@ -317,6 +378,26 @@ export default function App() {
   const inSplitMode = splitPaths.length > 0
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null
   const splitTabs = splitPaths.map(p => tabs.find(t => t.path === p)).filter(Boolean) as FileEntry[]
+
+  const onQueryKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      if (queryMode === 'search') setCursorIndex(savedCursorRef.current)
+      setActiveFilter('')
+      setQuery('')
+      setQueryMode(null)
+    } else if (e.key === 'Enter') {
+      if (queryMode === 'filter') setActiveFilter(query)
+      else if (queryMode === 'search') setActiveSearch(query)
+      setQuery('')
+      setQueryMode(null)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setCursorIndex(i => i >= displayedFiles.length - 1 ? -1 : i + 1)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setCursorIndex(i => i <= -1 ? displayedFiles.length - 1 : i - 1)
+    }
+  }, [queryMode, query, displayedFiles.length])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -328,7 +409,6 @@ export default function App() {
         return
       }
 
-      // Tab / Shift+Tab: タブ切り替え（タブがある場合）
       if (e.key === 'Tab') {
         e.preventDefault()
         if (hasTabs) e.shiftKey ? cycleTab(-1) : cycleTab(1)
@@ -338,19 +418,43 @@ export default function App() {
       switch (e.key) {
         case 'j': case 'ArrowDown':
           e.preventDefault()
-          setCursorIndex(i => Math.min(i + 1, files.length - 1))
+          setCursorIndex(i => i >= displayedFiles.length - 1 ? -1 : i + 1)
           return
         case 'k': case 'ArrowUp':
           e.preventDefault()
-          setCursorIndex(i => Math.max(i - 1, -1))
+          setCursorIndex(i => i <= -1 ? displayedFiles.length - 1 : i - 1)
           return
         case 'g': setCursorIndex(-1); return
-        case 'G': setCursorIndex(files.length - 1); return
+        case 'G': setCursorIndex(displayedFiles.length - 1); return
+        case '/':
+          e.preventDefault()
+          savedCursorRef.current = cursorIndex
+          setQuery('')
+          setQueryMode('search')
+          return
+        case 'f':
+          savedCursorRef.current = cursorIndex
+          setQuery('')
+          setQueryMode('filter')
+          return
+        case 'n': case 'N': {
+          if (!activeSearch) return
+          const lq = activeSearch.toLowerCase()
+          const dir = e.key === 'n' ? 1 : -1
+          const len = displayedFiles.length
+          let found = -1
+          for (let step = 1; step <= len; step++) {
+            const idx = ((cursorIndex === -1 ? (dir === 1 ? -1 : 0) : cursorIndex) + dir * step + len) % len
+            if (displayedFiles[idx]?.name.toLowerCase().includes(lq)) { found = idx; break }
+          }
+          if (found !== -1) setCursorIndex(found)
+          return
+        }
         case 'v': setViewMode(m => m === 'list' ? 'gallery' : 'list'); return
         case '?': e.preventDefault(); setShowHelp(true); return
         case 'o': {
           if (cursorIndex >= 0) {
-            const entry = files[cursorIndex]
+            const entry = displayedFiles[cursorIndex]
             if (entry && isPreviewable(entry.name)) openTab(entry)
           }
           return
@@ -358,7 +462,7 @@ export default function App() {
         case 'Enter': {
           e.preventDefault()
           if (cursorIndex === -1) { navigateUp(); return }
-          const entry = files[cursorIndex]
+          const entry = displayedFiles[cursorIndex]
           if (!entry) return
           if (entry.isDir) navigateTo(entry.path)
           else if (isPreviewable(entry.name)) openTab(entry)
@@ -367,7 +471,7 @@ export default function App() {
         case 'l': case 'ArrowRight':
           e.preventDefault()
           if (cursorIndex === -1) navigateUp()
-          else { const entry = files[cursorIndex]; if (entry?.isDir) navigateTo(entry.path) }
+          else { const entry = displayedFiles[cursorIndex]; if (entry?.isDir) navigateTo(entry.path) }
           return
         case 'h': case 'ArrowLeft': case 'Backspace':
           e.preventDefault()
@@ -384,7 +488,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hasTabs, inSplitMode, activeTabPath, showHelp, cursorIndex, files, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo])
+  }, [hasTabs, inSplitMode, activeTabPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo])
 
   return (
     <div className={styles.app}>
@@ -414,6 +518,38 @@ export default function App() {
         <div className={`${styles.panel} ${hasTabs ? styles.panelNarrow : ''}`}>
           {viewMode === 'list' ? (
             <div className={styles.fileList}>
+              {queryMode !== null && (
+                <div className={styles.queryBar}>
+                  <span className={styles.queryLabel}>{queryMode === 'search' ? '/' : 'f'}</span>
+                  <input
+                    ref={queryInputRef}
+                    className={styles.queryInput}
+                    value={query}
+                    onChange={e => setQuery(e.target.value)}
+                    onKeyDown={onQueryKeyDown}
+                    placeholder={queryMode === 'search' ? 'search...' : 'filter...'}
+                  />
+                  <button
+                    className={styles.queryClose}
+                    onClick={() => {
+                      if (queryMode === 'search') setCursorIndex(savedCursorRef.current)
+                      setActiveFilter('')
+                      setQuery('')
+                      setQueryMode(null)
+                    }}
+                  >✕</button>
+                </div>
+              )}
+              {activeFilter && queryMode === null && (
+                <div className={styles.filterBadge}>
+                  <span className={styles.filterBadgeLabel}>f: {activeFilter}</span>
+                  <button
+                    className={styles.filterBadgeClear}
+                    onClick={() => setActiveFilter('')}
+                    title="フィルターをクリア"
+                  >✕</button>
+                </div>
+              )}
               <div
                 ref={upRowRef}
                 className={`${styles.fileRow} ${styles.dirRow} ${cursorIndex === -1 ? styles.cursorRow : ''}`}
@@ -422,7 +558,7 @@ export default function App() {
                 <span className={styles.iconDir}>▲</span>
                 <span className={styles.fileName}>..</span>
               </div>
-              {files.map((f, i) => (
+              {displayedFiles.map((f, i) => (
                 <div
                   key={f.path}
                   ref={el => { rowRefs.current[i] = el }}
@@ -436,7 +572,9 @@ export default function App() {
                   onClick={() => f.isDir ? navigateTo(f.path) : isPreviewable(f.name) ? openTab(f) : null}
                 >
                   <FileIcon entry={f} />
-                  <span className={styles.fileName}>{f.name}</span>
+                  <span className={styles.fileName}>
+                    <HighlightMatch text={f.name} query={highlightQuery} />
+                  </span>
                   {!f.isDir && <span className={styles.fileSize}>{formatSize(f.size)}</span>}
                 </div>
               ))}

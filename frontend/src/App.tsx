@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import styles from './App.module.css'
 
 interface FileEntry {
@@ -201,7 +204,7 @@ function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onCl
         <div className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]}`}>
           {mdContent === null || mdContent === undefined
             ? <span className={styles.mdLoading}>loading…</span>
-            : <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdContent}</ReactMarkdown>
+            : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{mdContent}</ReactMarkdown>
           }
         </div>
       ) : (

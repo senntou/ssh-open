@@ -96,7 +96,9 @@ const HELP_ROWS: [string, string][] = [
   ['v', 'リスト / ギャラリー切り替え'],
   ['Tab / Shift+Tab', '(タブあり) 次 / 前のタブへ'],
   ['p', '(タブあり) 比較ビューに追加/解除'],
-  ['Esc', '比較ビューを終了'],
+  ['F', '(MD) 全画面表示の開閉'],
+  ['+ / -', '(全画面中) フォントサイズ変更'],
+  ['Esc', '全画面 / 比較ビューを終了'],
   ['?', 'このヘルプを表示'],
 ]
 
@@ -163,18 +165,65 @@ function TabBar({ tabs, activeTabPath, splitPaths, onTabClick, onTabClose, onTog
   )
 }
 
+interface FullscreenMdModalProps {
+  file: FileEntry
+  mdContent: string | null | undefined
+  mdTheme: 'dark' | 'light' | 'academic' | 'pop'
+  onMdThemeChange: (t: 'dark' | 'light' | 'academic' | 'pop') => void
+  mdFontSize: number
+  onMdFontSizeChange: (n: number) => void
+  onClose: () => void
+}
+
+function FullscreenMdModal({ file, mdContent, mdTheme, onMdThemeChange, mdFontSize, onMdFontSizeChange, onClose }: FullscreenMdModalProps) {
+  return (
+    <div className={styles.fullscreenOverlay} onClick={onClose}>
+      <div className={styles.fullscreenModal} onClick={e => e.stopPropagation()}>
+        <div className={styles.fullscreenHeader}>
+          <span className={styles.previewName}>{file.name}</span>
+          <div className={styles.mdThemeToggle}>
+            {(['dark', 'light', 'academic', 'pop'] as const).map(t => (
+              <button
+                key={t}
+                className={mdTheme === t ? styles.active : ''}
+                onClick={() => onMdThemeChange(t)}
+              >{t}</button>
+            ))}
+          </div>
+          <div className={styles.fontSizeControls}>
+            <button onClick={() => onMdFontSizeChange(Math.max(10, mdFontSize - 1))} title="フォント縮小 (-)">A-</button>
+            <span className={styles.fontSizeValue}>{mdFontSize}</span>
+            <button onClick={() => onMdFontSizeChange(Math.min(32, mdFontSize + 1))} title="フォント拡大 (+)">&nbsp;A+</button>
+          </div>
+          <button className={styles.closeBtn} onClick={onClose} title="閉じる (Esc)">✕</button>
+        </div>
+        <div
+          className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]} ${styles.fullscreenContent}`}
+          style={{ fontSize: mdFontSize }}
+        >
+          {mdContent === null || mdContent === undefined
+            ? <span className={styles.mdLoading}>loading…</span>
+            : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{mdContent}</ReactMarkdown>
+          }
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface PreviewPaneProps {
   file: FileEntry
   isActive: boolean
   mdContent: string | null | undefined
   mdTheme: 'dark' | 'light' | 'academic' | 'pop'
   onMdThemeChange: (t: 'dark' | 'light' | 'academic' | 'pop') => void
+  onFullscreen: () => void
   onClose: () => void
   onActivate: () => void
   closeTitle: string
 }
 
-function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onClose, onActivate, closeTitle }: PreviewPaneProps) {
+function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onFullscreen, onClose, onActivate, closeTitle }: PreviewPaneProps) {
   return (
     <div
       className={`${styles.preview} ${isActive ? styles.previewActive : ''}`}
@@ -184,15 +233,22 @@ function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onCl
         <span className={styles.previewName}>{file.name}</span>
         <span className={styles.previewSize}>{formatSize(file.size)}</span>
         {isMd(file.name) && (
-          <div className={styles.mdThemeToggle}>
-            {(['dark', 'light', 'academic', 'pop'] as const).map(t => (
-              <button
-                key={t}
-                className={mdTheme === t ? styles.active : ''}
-                onClick={e => { e.stopPropagation(); onMdThemeChange(t) }}
-              >{t}</button>
-            ))}
-          </div>
+          <>
+            <div className={styles.mdThemeToggle}>
+              {(['dark', 'light', 'academic', 'pop'] as const).map(t => (
+                <button
+                  key={t}
+                  className={mdTheme === t ? styles.active : ''}
+                  onClick={e => { e.stopPropagation(); onMdThemeChange(t) }}
+                >{t}</button>
+              ))}
+            </div>
+            <button
+              className={styles.fullscreenBtn}
+              title="全画面表示 (F)"
+              onClick={e => { e.stopPropagation(); onFullscreen() }}
+            >⤢</button>
+          </>
         )}
         <button className={styles.closeBtn} title={closeTitle} onClick={e => { e.stopPropagation(); onClose() }}>✕</button>
       </div>
@@ -231,6 +287,8 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false)
   const [mdContents, setMdContents] = useState<Record<string, string | null>>({})
   const [mdTheme, setMdTheme] = useState<'dark' | 'light' | 'academic' | 'pop'>('light')
+  const [fullscreenPath, setFullscreenPath] = useState<string | null>(null)
+  const [mdFontSize, setMdFontSize] = useState(15)
   const [query, setQuery] = useState('')
   const [queryMode, setQueryMode] = useState<'search' | 'filter' | null>(null)
   const [activeFilter, setActiveFilter] = useState('')
@@ -407,6 +465,13 @@ export default function App() {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
+      if (fullscreenPath) {
+        if (e.key === 'Escape' || e.key === 'F') { e.preventDefault(); setFullscreenPath(null) }
+        if (e.key === '+' || e.key === '=') setMdFontSize(s => Math.min(32, s + 1))
+        if (e.key === '-') setMdFontSize(s => Math.max(10, s - 1))
+        return
+      }
+
       if (showHelp) {
         if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); setShowHelp(false) }
         return
@@ -483,6 +548,11 @@ export default function App() {
         case 'p':
           if (hasTabs && activeTabPath) toggleSplit(activeTabPath)
           return
+        case 'F':
+          if (activeTabPath && tabs.find(t => t.path === activeTabPath && isMd(t.name))) {
+            setFullscreenPath(activeTabPath)
+          }
+          return
         case 'Escape':
           if (inSplitMode) setSplitPaths([])
           else setCursorIndex(-1)
@@ -491,7 +561,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hasTabs, inSplitMode, activeTabPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo])
+  }, [hasTabs, inSplitMode, activeTabPath, fullscreenPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo, tabs, mdFontSize])
 
   return (
     <div className={styles.app}>
@@ -611,6 +681,7 @@ export default function App() {
               mdContent={mdContents[file.path]}
               mdTheme={mdTheme}
               onMdThemeChange={setMdTheme}
+              onFullscreen={() => setFullscreenPath(file.path)}
               onClose={() => toggleSplit(file.path)}
               onActivate={() => setActiveTabPath(file.path)}
               closeTitle="比較から外す"
@@ -623,6 +694,7 @@ export default function App() {
             mdContent={mdContents[activeTab.path]}
             mdTheme={mdTheme}
             onMdThemeChange={setMdTheme}
+            onFullscreen={() => setFullscreenPath(activeTab.path)}
             onClose={() => closeTab(activeTab.path)}
             onActivate={() => {}}
             closeTitle="タブを閉じる"
@@ -631,6 +703,21 @@ export default function App() {
       </div>
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {(() => {
+        const fsFile = fullscreenPath ? tabs.find(t => t.path === fullscreenPath) ?? null : null
+        return fsFile ? (
+          <FullscreenMdModal
+            file={fsFile}
+            mdContent={mdContents[fsFile.path]}
+            mdTheme={mdTheme}
+            onMdThemeChange={setMdTheme}
+            mdFontSize={mdFontSize}
+            onMdFontSizeChange={setMdFontSize}
+            onClose={() => setFullscreenPath(null)}
+          />
+        ) : null
+      })()}
     </div>
   )
 }

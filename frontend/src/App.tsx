@@ -96,9 +96,12 @@ const HELP_ROWS: [string, string][] = [
   ['v', 'リスト / ギャラリー切り替え'],
   ['Tab / Shift+Tab', '(タブあり) 次 / 前のタブへ'],
   ['p', '(タブあり) 比較ビューに追加/解除'],
-  ['F', '(MD) 全画面表示の開閉'],
-  ['+ / -', '(全画面中) フォントサイズ変更'],
-  ['Esc', '全画面 / 比較ビューを終了'],
+  ['F', '(タブあり) フォーカスモード（サイドバー等を非表示）'],
+  ['+ / -', '(MD) フォントサイズ変更'],
+  ['ホイール', '(画像) ズームイン / アウト（カーソル中心）'],
+  ['ドラッグ', '(画像 ズーム中) パン移動'],
+  ['ダブルクリック', '(画像) ズームリセット'],
+  ['Esc', 'フォーカスモード終了 / 比較ビューを終了'],
   ['?', 'このヘルプを表示'],
 ]
 
@@ -165,65 +168,98 @@ function TabBar({ tabs, activeTabPath, splitPaths, onTabClick, onTabClose, onTog
   )
 }
 
-interface FullscreenMdModalProps {
-  file: FileEntry
-  mdContent: string | null | undefined
-  mdTheme: 'dark' | 'light' | 'academic' | 'pop'
-  onMdThemeChange: (t: 'dark' | 'light' | 'academic' | 'pop') => void
-  mdFontSize: number
-  onMdFontSizeChange: (n: number) => void
-  onClose: () => void
-}
-
-function FullscreenMdModal({ file, mdContent, mdTheme, onMdThemeChange, mdFontSize, onMdFontSizeChange, onClose }: FullscreenMdModalProps) {
-  return (
-    <div className={styles.fullscreenOverlay} onClick={onClose}>
-      <div className={styles.fullscreenModal} onClick={e => e.stopPropagation()}>
-        <div className={styles.fullscreenHeader}>
-          <span className={styles.previewName}>{file.name}</span>
-          <div className={styles.mdThemeToggle}>
-            {(['dark', 'light', 'academic', 'pop'] as const).map(t => (
-              <button
-                key={t}
-                className={mdTheme === t ? styles.active : ''}
-                onClick={() => onMdThemeChange(t)}
-              >{t}</button>
-            ))}
-          </div>
-          <div className={styles.fontSizeControls}>
-            <button onClick={() => onMdFontSizeChange(Math.max(10, mdFontSize - 1))} title="フォント縮小 (-)">A-</button>
-            <span className={styles.fontSizeValue}>{mdFontSize}</span>
-            <button onClick={() => onMdFontSizeChange(Math.min(32, mdFontSize + 1))} title="フォント拡大 (+)">&nbsp;A+</button>
-          </div>
-          <button className={styles.closeBtn} onClick={onClose} title="閉じる (Esc)">✕</button>
-        </div>
-        <div
-          className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]} ${styles.fullscreenContent}`}
-          style={{ fontSize: mdFontSize }}
-        >
-          {mdContent === null || mdContent === undefined
-            ? <span className={styles.mdLoading}>loading…</span>
-            : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{mdContent}</ReactMarkdown>
-          }
-        </div>
-      </div>
-    </div>
-  )
-}
-
 interface PreviewPaneProps {
   file: FileEntry
   isActive: boolean
   mdContent: string | null | undefined
   mdTheme: 'dark' | 'light' | 'academic' | 'pop'
   onMdThemeChange: (t: 'dark' | 'light' | 'academic' | 'pop') => void
-  onFullscreen: () => void
+  mdFontSize: number
+  onMdFontSizeChange: (n: number) => void
   onClose: () => void
   onActivate: () => void
   closeTitle: string
 }
 
-function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onFullscreen, onClose, onActivate, closeTitle }: PreviewPaneProps) {
+function ZoomableImage({ src, alt }: { src: string; alt: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+  const [tx, setTx] = useState(0)
+  const [ty, setTy] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const dragStartRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+
+  useEffect(() => { setScale(1); setTx(0); setTy(0) }, [src])
+
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault()
+    const container = containerRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const cx = e.clientX - rect.left - rect.width / 2
+    const cy = e.clientY - rect.top - rect.height / 2
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    setScale(s => {
+      const ns = Math.max(0.25, Math.min(20, s * factor))
+      const ratio = ns / s
+      setTx(t => cx - (cx - t) * ratio)
+      setTy(t => cy - (cy - t) * ratio)
+      return ns
+    })
+  }, [])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragStartRef.current = { x: e.clientX, y: e.clientY, tx, ty }
+    setDragging(true)
+  }, [tx, ty])
+
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragStartRef.current) return
+    setTx(dragStartRef.current.tx + e.clientX - dragStartRef.current.x)
+    setTy(dragStartRef.current.ty + e.clientY - dragStartRef.current.y)
+  }, [])
+
+  const onMouseUp = useCallback(() => { dragStartRef.current = null; setDragging(false) }, [])
+
+  const onDblClick = useCallback(() => { setScale(1); setTx(0); setTy(0) }, [])
+
+  const isZoomed = scale !== 1 || tx !== 0 || ty !== 0
+
+  return (
+    <div
+      ref={containerRef}
+      className={styles.previewImg}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
+      onDoubleClick={onDblClick}
+      style={{ cursor: dragging ? 'grabbing' : isZoomed ? 'grab' : 'default' }}
+    >
+      <img
+        src={src}
+        alt={alt}
+        draggable={false}
+        style={{
+          transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+          transformOrigin: 'center center',
+          userSelect: 'none',
+          pointerEvents: 'none',
+        }}
+      />
+    </div>
+  )
+}
+
+function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, mdFontSize, onMdFontSizeChange, onClose, onActivate, closeTitle }: PreviewPaneProps) {
   return (
     <div
       className={`${styles.preview} ${isActive ? styles.previewActive : ''}`}
@@ -243,21 +279,19 @@ function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, onFu
                 >{t}</button>
               ))}
             </div>
-            <button
-              className={styles.fullscreenBtn}
-              title="全画面表示 (F)"
-              onClick={e => { e.stopPropagation(); onFullscreen() }}
-            >⤢</button>
+            <div className={styles.fontSizeControls} onClick={e => e.stopPropagation()}>
+              <button onClick={() => onMdFontSizeChange(Math.max(10, mdFontSize - 1))} title="フォント縮小 (-)">A-</button>
+              <span className={styles.fontSizeValue}>{mdFontSize}</span>
+              <button onClick={() => onMdFontSizeChange(Math.min(32, mdFontSize + 1))} title="フォント拡大 (+)">A+</button>
+            </div>
           </>
         )}
         <button className={styles.closeBtn} title={closeTitle} onClick={e => { e.stopPropagation(); onClose() }}>✕</button>
       </div>
       {isImage(file.name) ? (
-        <div className={styles.previewImg}>
-          <img src={fileUrl(file.path)} alt={file.name} />
-        </div>
+        <ZoomableImage src={fileUrl(file.path)} alt={file.name} />
       ) : isMd(file.name) ? (
-        <div className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]}`}>
+        <div className={`${styles.previewMd} ${styles[`mdTheme_${mdTheme}`]}`} style={{ fontSize: mdFontSize }}>
           {mdContent === null || mdContent === undefined
             ? <span className={styles.mdLoading}>loading…</span>
             : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{mdContent}</ReactMarkdown>
@@ -287,7 +321,7 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false)
   const [mdContents, setMdContents] = useState<Record<string, string | null>>({})
   const [mdTheme, setMdTheme] = useState<'dark' | 'light' | 'academic' | 'pop'>('light')
-  const [fullscreenPath, setFullscreenPath] = useState<string | null>(null)
+  const [focusMode, setFocusMode] = useState(false)
   const [mdFontSize, setMdFontSize] = useState(15)
   const [query, setQuery] = useState('')
   const [queryMode, setQueryMode] = useState<'search' | 'filter' | null>(null)
@@ -465,13 +499,6 @@ export default function App() {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
-      if (fullscreenPath) {
-        if (e.key === 'Escape' || e.key === 'F') { e.preventDefault(); setFullscreenPath(null) }
-        if (e.key === '+' || e.key === '=') setMdFontSize(s => Math.min(32, s + 1))
-        if (e.key === '-') setMdFontSize(s => Math.max(10, s - 1))
-        return
-      }
-
       if (showHelp) {
         if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); setShowHelp(false) }
         return
@@ -549,23 +576,28 @@ export default function App() {
           if (hasTabs && activeTabPath) toggleSplit(activeTabPath)
           return
         case 'F':
-          if (activeTabPath && tabs.find(t => t.path === activeTabPath && isMd(t.name))) {
-            setFullscreenPath(activeTabPath)
-          }
+          if (hasTabs) setFocusMode(m => !m)
+          return
+        case '+': case '=':
+          setMdFontSize(s => Math.min(32, s + 1))
+          return
+        case '-':
+          setMdFontSize(s => Math.max(10, s - 1))
           return
         case 'Escape':
-          if (inSplitMode) setSplitPaths([])
+          if (focusMode) { setFocusMode(false) }
+          else if (inSplitMode) setSplitPaths([])
           else setCursorIndex(-1)
           return
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hasTabs, inSplitMode, activeTabPath, fullscreenPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo, tabs, mdFontSize])
+  }, [hasTabs, inSplitMode, focusMode, activeTabPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo, tabs, mdFontSize])
 
   return (
     <div className={styles.app}>
-      <header className={styles.header}>
+      {!focusMode && <header className={styles.header}>
         <span className={styles.logo}>ssh-open</span>
         <Breadcrumb path={currentPath} onNavigate={navigateTo} />
         <span className={`${styles.flash} ${flashPath ? styles.flashActive : ''}`}>↺</span>
@@ -574,9 +606,9 @@ export default function App() {
           <button className={viewMode === 'gallery' ? styles.active : ''} onClick={() => setViewMode('gallery')} title="Gallery view (v)">⊞</button>
         </div>
         <button className={styles.helpBtn} onClick={() => setShowHelp(true)} title="Keyboard shortcuts (?)">?</button>
-      </header>
+      </header>}
 
-      {hasTabs && (
+      {!focusMode && hasTabs && (
         <TabBar
           tabs={tabs}
           activeTabPath={activeTabPath}
@@ -588,7 +620,7 @@ export default function App() {
       )}
 
       <div className={styles.body}>
-        <div className={`${styles.panel} ${hasTabs ? styles.panelNarrow : ''}`}>
+        {!focusMode && <div className={`${styles.panel} ${hasTabs ? styles.panelNarrow : ''}`}>
           {viewMode === 'list' ? (
             <div className={styles.fileList}>
               {queryMode !== null && (
@@ -670,7 +702,7 @@ export default function App() {
               )}
             </div>
           )}
-        </div>
+        </div>}
 
         {inSplitMode ? (
           splitTabs.map(file => (
@@ -681,7 +713,8 @@ export default function App() {
               mdContent={mdContents[file.path]}
               mdTheme={mdTheme}
               onMdThemeChange={setMdTheme}
-              onFullscreen={() => setFullscreenPath(file.path)}
+              mdFontSize={mdFontSize}
+              onMdFontSizeChange={setMdFontSize}
               onClose={() => toggleSplit(file.path)}
               onActivate={() => setActiveTabPath(file.path)}
               closeTitle="比較から外す"
@@ -694,7 +727,8 @@ export default function App() {
             mdContent={mdContents[activeTab.path]}
             mdTheme={mdTheme}
             onMdThemeChange={setMdTheme}
-            onFullscreen={() => setFullscreenPath(activeTab.path)}
+            mdFontSize={mdFontSize}
+            onMdFontSizeChange={setMdFontSize}
             onClose={() => closeTab(activeTab.path)}
             onActivate={() => {}}
             closeTitle="タブを閉じる"
@@ -703,21 +737,6 @@ export default function App() {
       </div>
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
-
-      {(() => {
-        const fsFile = fullscreenPath ? tabs.find(t => t.path === fullscreenPath) ?? null : null
-        return fsFile ? (
-          <FullscreenMdModal
-            file={fsFile}
-            mdContent={mdContents[fsFile.path]}
-            mdTheme={mdTheme}
-            onMdThemeChange={setMdTheme}
-            mdFontSize={mdFontSize}
-            onMdFontSizeChange={setMdFontSize}
-            onClose={() => setFullscreenPath(null)}
-          />
-        ) : null
-      })()}
     </div>
   )
 }

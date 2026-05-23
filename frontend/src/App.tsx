@@ -95,6 +95,7 @@ const HELP_ROWS: [string, string][] = [
   ['h / ← / BS', '親ディレクトリへ'],
   ['v', 'リスト / ギャラリー切り替え'],
   ['Tab / Shift+Tab', '(タブあり) 次 / 前のタブへ'],
+  ['d', '(タブあり) 今のタブを閉じる'],
   ['p', '(タブあり) 比較ビューに追加/解除'],
   ['F', '(タブあり) フォーカスモード（サイドバー等を非表示）'],
   ['+ / -', '(MD) フォントサイズ変更'],
@@ -572,6 +573,9 @@ export default function App() {
           e.preventDefault()
           navigateUp()
           return
+        case 'd':
+          if (hasTabs && activeTabPath) closeTab(activeTabPath)
+          return
         case 'p':
           if (hasTabs && activeTabPath) toggleSplit(activeTabPath)
           return
@@ -705,21 +709,28 @@ export default function App() {
         </div>}
 
         {inSplitMode ? (
-          splitTabs.map(file => (
-            <PreviewPane
-              key={file.path}
-              file={file}
-              isActive={activeTabPath === file.path}
-              mdContent={mdContents[file.path]}
-              mdTheme={mdTheme}
-              onMdThemeChange={setMdTheme}
-              mdFontSize={mdFontSize}
-              onMdFontSizeChange={setMdFontSize}
-              onClose={() => toggleSplit(file.path)}
-              onActivate={() => setActiveTabPath(file.path)}
-              closeTitle="比較から外す"
-            />
-          ))
+          (() => {
+            const displayFiles = [...splitTabs]
+            if (activeTab && !splitPaths.includes(activeTab.path)) displayFiles.push(activeTab)
+            return displayFiles.map(file => {
+              const isPinned = splitPaths.includes(file.path)
+              return (
+                <PreviewPane
+                  key={file.path}
+                  file={file}
+                  isActive={activeTabPath === file.path}
+                  mdContent={mdContents[file.path]}
+                  mdTheme={mdTheme}
+                  onMdThemeChange={setMdTheme}
+                  mdFontSize={mdFontSize}
+                  onMdFontSizeChange={setMdFontSize}
+                  onClose={() => isPinned ? toggleSplit(file.path) : closeTab(file.path)}
+                  onActivate={() => setActiveTabPath(file.path)}
+                  closeTitle={isPinned ? "比較から外す" : "タブを閉じる"}
+                />
+              )
+            })
+          })()
         ) : activeTab ? (
           <PreviewPane
             file={activeTab}

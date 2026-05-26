@@ -5,14 +5,17 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import styles from './App.module.css'
-
-interface FileEntry {
-  name: string
-  path: string
-  isDir: boolean
-  size: number
-  modTime: number
-}
+import {
+  loadBookmarks, saveBookmarks,
+  loadExpanded, saveExpanded,
+  loadFrecency, saveFrecency, bumpFrecency, frecencyScore,
+  type FrecencyMap,
+} from './storage'
+import {
+  type FileEntry, type FlatNode,
+  parentPath, containingBookmark, ancestorsBetween,
+  flattenTree, fuzzyScore, filterFlat,
+} from './tree'
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.avif'])
 const PDF_EXTS = new Set(['.pdf'])
@@ -73,26 +76,32 @@ function Breadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: string
   )
 }
 
-function FileIcon({ entry }: { entry: FileEntry }) {
-  if (entry.isDir) return <span className={styles.iconDir}>▶</span>
-  if (isImage(entry.name)) return <span className={styles.iconImg}>◈</span>
-  if (isPdf(entry.name)) return <span className={styles.iconPdf}>⊠</span>
-  if (isHtml(entry.name)) return <span className={styles.iconHtml}>⊞</span>
-  if (isMd(entry.name)) return <span className={styles.iconMd}>❡</span>
+function NodeIcon({ node }: { node: FlatNode }) {
+  if (node.isDir) {
+    if (node.rootKind === 'bookmark') return <span className={styles.iconBookmark}>★</span>
+    if (node.rootKind === 'current') return <span className={styles.iconCurrent}>◉</span>
+    return <span className={styles.iconDir}>{node.expanded ? '▼' : '▶'}</span>
+  }
+  if (isImage(node.name)) return <span className={styles.iconImg}>◈</span>
+  if (isPdf(node.name)) return <span className={styles.iconPdf}>⊠</span>
+  if (isHtml(node.name)) return <span className={styles.iconHtml}>⊞</span>
+  if (isMd(node.name)) return <span className={styles.iconMd}>❡</span>
   return <span className={styles.iconFile}>·</span>
 }
 
 const HELP_ROWS: [string, string][] = [
-  ['j / ↓', 'カーソルを下に移動（末尾で折り返し）'],
-  ['k / ↑', 'カーソルを上に移動（先頭で折り返し）'],
+  ['j / ↓', 'カーソルを下に移動'],
+  ['k / ↑', 'カーソルを上に移動'],
   ['g', 'リスト先頭へ'],
   ['G', 'リスト末尾へ'],
   ['/', '検索（カーソルジャンプ、Enter確定/Escキャンセル）'],
   ['n / N', '(検索確定後) 次 / 前のマッチへ'],
   ['f', 'フィルター（マッチのみ表示、Enter確定/Escクリア）'],
-  ['o / Enter', 'ファイルをタブで開く'],
-  ['l / → / Enter', '(ディレクトリ) 中に入る'],
-  ['h / ← / BS', '親ディレクトリへ'],
+  ['l / → / Enter', '(ディレクトリ) 展開して中に入る'],
+  ['h / ← / BS', '(展開中ディレクトリ) 折りたたむ / それ以外は親へ'],
+  ['o', 'ファイルをタブで開く'],
+  ['m', 'カーソル位置のディレクトリをブックマーク/解除'],
+  ['Space / ;', 'ブックマーク/訪問先へ fuzzy ジャンプ'],
   ['v', 'リスト / ギャラリー切り替え'],
   ['Tab / Shift+Tab', '(タブあり) 次 / 前のタブへ'],
   ['d', '(タブあり) 今のタブを閉じる'],
@@ -150,7 +159,9 @@ function TabBar({ tabs, activeTabPath, splitPaths, onTabClick, onTabClose, onTog
             className={[styles.tab, isActive ? styles.tabActive : '', isPinned ? styles.tabPinned : ''].join(' ')}
             onClick={() => onTabClick(tab.path)}
           >
-            <FileIcon entry={tab} />
+            <span className={styles.tabIcon}>
+              {isImage(tab.name) ? '◈' : isPdf(tab.name) ? '⊠' : isHtml(tab.name) ? '⊞' : isMd(tab.name) ? '❡' : '·'}
+            </span>
             <span className={styles.tabName}>{tab.name}</span>
             <button
               className={`${styles.tabBtn} ${isPinned ? styles.tabBtnPinned : ''}`}
@@ -310,16 +321,103 @@ function PreviewPane({ file, isActive, mdContent, mdTheme, onMdThemeChange, mdFo
   )
 }
 
+interface JumpCandidate {
+  path: string
+  isBookmark: boolean
+  score: number
+}
+
+interface JumpModalProps {
+  candidates: string[]
+  bookmarkSet: Set<string>
+  frecency: FrecencyMap
+  onPick: (path: string) => void
+  onClose: () => void
+}
+
+function JumpModal({ candidates, bookmarkSet, frecency, onPick, onClose }: JumpModalProps) {
+  const [q, setQ] = useState('')
+  const [idx, setIdx] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const ranked = useMemo<JumpCandidate[]>(() => {
+    const results: JumpCandidate[] = []
+    for (const p of candidates) {
+      const fz = fuzzyScore(p, q)
+      if (fz === null) continue
+      const fr = frecencyScore(frecency[p])
+      const bookmarkBonus = bookmarkSet.has(p) ? 10 : 0
+      results.push({ path: p, isBookmark: bookmarkSet.has(p), score: fz + fr + bookmarkBonus })
+    }
+    results.sort((a, b) => b.score - a.score)
+    return results.slice(0, 50)
+  }, [candidates, q, frecency, bookmarkSet])
+
+  useEffect(() => { setIdx(0) }, [q])
+
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { e.preventDefault(); onClose() }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      const picked = ranked[idx]
+      if (picked) onPick(picked.path)
+    } else if (e.key === 'ArrowDown' || (e.key === 'n' && e.ctrlKey)) {
+      e.preventDefault()
+      setIdx(i => Math.min(ranked.length - 1, i + 1))
+    } else if (e.key === 'ArrowUp' || (e.key === 'p' && e.ctrlKey)) {
+      e.preventDefault()
+      setIdx(i => Math.max(0, i - 1))
+    }
+  }
+
+  return (
+    <div className={styles.helpOverlay} onClick={onClose}>
+      <div className={styles.jumpModal} onClick={e => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className={styles.jumpInput}
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          onKeyDown={onKey}
+          placeholder="ディレクトリを fuzzy 検索…"
+        />
+        <div className={styles.jumpList}>
+          {ranked.length === 0 ? (
+            <div className={styles.jumpEmpty}>マッチなし</div>
+          ) : ranked.map((c, i) => (
+            <div
+              key={c.path}
+              className={`${styles.jumpItem} ${i === idx ? styles.jumpItemActive : ''}`}
+              onClick={() => onPick(c.path)}
+              onMouseEnter={() => setIdx(i)}
+            >
+              <span className={styles.jumpItemIcon}>{c.isBookmark ? '★' : '·'}</span>
+              <span className={styles.jumpItemPath}>{c.path}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
+  const [bookmarks, setBookmarks] = useState<string[]>(() => loadBookmarks())
+  const [expanded, setExpanded] = useState<Set<string>>(() => loadExpanded())
+  const [childrenCache, setChildrenCache] = useState<Record<string, FileEntry[]>>({})
+  const [frecency, setFrecency] = useState<FrecencyMap>(() => loadFrecency())
+
   const [currentPath, setCurrentPath] = useState('')
-  const [files, setFiles] = useState<FileEntry[]>([])
+  const [cursorPath, setCursorPath] = useState<string | null>(null)
   const [tabs, setTabs] = useState<FileEntry[]>([])
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
   const [splitPaths, setSplitPaths] = useState<string[]>([])
   const [viewMode, setViewMode] = useState<'list' | 'gallery'>('list')
   const [flashPath, setFlashPath] = useState(false)
-  const [cursorIndex, setCursorIndex] = useState(-1)
   const [showHelp, setShowHelp] = useState(false)
+  const [showJump, setShowJump] = useState(false)
   const [mdContents, setMdContents] = useState<Record<string, string | null>>({})
   const [mdTheme, setMdTheme] = useState<'dark' | 'light' | 'academic' | 'pop'>('light')
   const [focusMode, setFocusMode] = useState(false)
@@ -328,46 +426,87 @@ export default function App() {
   const [queryMode, setQueryMode] = useState<'search' | 'filter' | null>(null)
   const [activeFilter, setActiveFilter] = useState('')
   const [activeSearch, setActiveSearch] = useState('')
+
   const queryInputRef = useRef<HTMLInputElement>(null)
-  const savedCursorRef = useRef<number>(-1)
   const prevPathRef = useRef('')
   const fetchedMd = useRef<Set<string>>(new Set())
-  const upRowRef = useRef<HTMLDivElement>(null)
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const childrenCacheRef = useRef<Record<string, FileEntry[]>>({})
+  childrenCacheRef.current = childrenCache
 
-  const displayedFiles = useMemo(() => {
-    const q = queryMode === 'filter' ? query : activeFilter
-    if (!q) return files
-    const lq = q.toLowerCase()
-    return files.filter(f => f.name.toLowerCase().includes(lq))
-  }, [files, query, queryMode, activeFilter])
+  // Persist to localStorage.
+  useEffect(() => { saveBookmarks(bookmarks) }, [bookmarks])
+  useEffect(() => { saveExpanded(expanded) }, [expanded])
+  useEffect(() => { saveFrecency(frecency) }, [frecency])
 
-  const highlightQuery = queryMode !== null ? query : activeFilter || activeSearch
-
-  const loadFiles = useCallback(async (path: string, focusName?: string) => {
+  const loadChildren = useCallback(async (path: string): Promise<FileEntry[]> => {
+    const cached = childrenCacheRef.current[path]
+    if (cached) return cached
     const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`)
-    if (res.ok) {
-      const newFiles: FileEntry[] = await res.json()
-      setFiles(newFiles)
-      if (focusName) {
-        const idx = newFiles.findIndex(f => f.name === focusName)
-        if (idx !== -1) setCursorIndex(idx)
-      }
-    }
+    if (!res.ok) return []
+    const data: FileEntry[] = await res.json()
+    childrenCacheRef.current = { ...childrenCacheRef.current, [path]: data }
+    setChildrenCache(prev => ({ ...prev, [path]: data }))
+    return data
   }, [])
 
-  const navigateTo = useCallback((path: string, focusName?: string) => {
-    setCurrentPath(path)
-    loadFiles(path, focusName)
-  }, [loadFiles])
+  // Refresh the currentPath's children (no cache) so SSE updates pick up
+  // changes on disk.
+  const refreshChildren = useCallback(async (path: string) => {
+    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`)
+    if (!res.ok) return
+    const data: FileEntry[] = await res.json()
+    childrenCacheRef.current = { ...childrenCacheRef.current, [path]: data }
+    setChildrenCache(prev => ({ ...prev, [path]: data }))
+  }, [])
 
+  const flat = useMemo(() => flattenTree({
+    bookmarks, currentPath, expanded, children: childrenCache,
+  }), [bookmarks, currentPath, expanded, childrenCache])
+
+  const displayedFlat = useMemo(() => {
+    const q = queryMode === 'filter' ? query : activeFilter
+    return filterFlat(flat, q)
+  }, [flat, query, queryMode, activeFilter])
+
+  const highlightQuery = queryMode !== null ? query : activeFilter || activeSearch
+  const cursorIndex = useMemo(
+    () => cursorPath === null ? -1 : displayedFlat.findIndex(n => n.path === cursorPath),
+    [cursorPath, displayedFlat],
+  )
+
+  // Ensure a path and all of its ancestors (within its containing root) are
+  // expanded and have children loaded. Returns when all fetches finish.
+  const expandToPath = useCallback(async (path: string) => {
+    if (!path) return
+    const root = containingBookmark(path, bookmarks) ?? path
+    const chain = ancestorsBetween(root, path)
+    setExpanded(prev => {
+      const next = new Set(prev)
+      for (const a of chain) next.add(a)
+      return next
+    })
+    await Promise.all(chain.map(loadChildren))
+  }, [bookmarks, loadChildren])
+
+  const navigateTo = useCallback((path: string) => {
+    setCurrentPath(path)
+    setFrecency(prev => bumpFrecency(prev, path))
+    expandToPath(path)
+    setCursorPath(path)
+  }, [expandToPath])
+
+  // Boot: ask the server for currentPath, then subscribe to SSE for live
+  // path changes triggered by `ssh-open` on the remote.
   useEffect(() => {
     fetch('/api/current-path')
       .then(r => r.json())
       .then(data => {
-        setCurrentPath(data.path)
-        prevPathRef.current = data.path
-        loadFiles(data.path)
+        const p: string = data.path
+        prevPathRef.current = p
+        setCurrentPath(p)
+        setFrecency(prev => bumpFrecency(prev, p))
+        expandToPath(p).then(() => setCursorPath(p))
       })
 
     const es = new EventSource('/api/events')
@@ -377,35 +516,35 @@ export default function App() {
       if (path !== prevPathRef.current) {
         prevPathRef.current = path
         setCurrentPath(path)
-        loadFiles(path)
+        setFrecency(prev => bumpFrecency(prev, path))
+        expandToPath(path).then(() => setCursorPath(path))
+        // refresh the new dir's contents (in case it's been re-listed)
+        refreshChildren(path)
         setFlashPath(true)
         setTimeout(() => setFlashPath(false), 800)
       }
     }
     return () => es.close()
-  }, [loadFiles])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
+  // Reset transient search/filter state when the currentPath itself changes
+  // (similar to old behavior when entering a new directory).
   useEffect(() => {
-    setCursorIndex(-1)
     setQuery('')
     setQueryMode(null)
-    setActiveFilter('')
-    rowRefs.current = []
   }, [currentPath])
 
   // Jump cursor to first match when typing in search mode
   useEffect(() => {
     if (queryMode !== 'search' || !query) return
-    const idx = files.findIndex(f => f.name.toLowerCase().includes(query.toLowerCase()))
-    if (idx !== -1) setCursorIndex(idx)
-  }, [query, queryMode, files])
-
-  // Reset cursor when filter query changes
-  useEffect(() => {
-    if (queryMode === 'filter') setCursorIndex(-1)
+    const lq = query.toLowerCase()
+    const hit = displayedFlat.find(n => n.name.toLowerCase().includes(lq))
+    if (hit) setCursorPath(hit.path)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, queryMode])
 
-  // Focus query input when mode activates (setTimeout to avoid the trigger key being typed in)
+  // Focus query input when query mode activates.
   useEffect(() => {
     if (queryMode !== null) {
       const t = setTimeout(() => queryInputRef.current?.focus(), 0)
@@ -413,6 +552,7 @@ export default function App() {
     }
   }, [queryMode])
 
+  // Lazily fetch markdown content for newly-opened tabs.
   useEffect(() => {
     for (const t of tabs) {
       if (isMd(t.name) && !fetchedMd.current.has(t.path)) {
@@ -426,12 +566,10 @@ export default function App() {
   }, [tabs])
 
   useEffect(() => {
-    if (cursorIndex === -1) {
-      upRowRef.current?.scrollIntoView({ block: 'nearest' })
-    } else {
-      rowRefs.current[cursorIndex]?.scrollIntoView({ block: 'nearest' })
+    if (cursorPath && rowRefs.current[cursorPath]) {
+      rowRefs.current[cursorPath]?.scrollIntoView({ block: 'nearest' })
     }
-  }, [cursorIndex])
+  }, [cursorPath, displayedFlat.length])
 
   const openTab = useCallback((entry: FileEntry) => {
     setTabs(prev => prev.some(t => t.path === entry.path) ? prev : [...prev, entry])
@@ -462,14 +600,80 @@ export default function App() {
     })
   }, [tabs])
 
-  const navigateUp = useCallback(() => {
-    const parts = currentPath.split('/').filter(Boolean)
-    const dirName = parts.length > 0 ? parts[parts.length - 1] : undefined
-    const parent = '/' + parts.slice(0, -1).join('/')
-    navigateTo(parent, dirName)
-  }, [currentPath, navigateTo])
+  const toggleBookmark = useCallback((path: string) => {
+    setBookmarks(prev => prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path])
+  }, [])
 
-  const imageFiles = files.filter(f => !f.isDir && isImage(f.name))
+  const toggleExpand = useCallback((path: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+    if (!expanded.has(path)) loadChildren(path)
+  }, [expanded, loadChildren])
+
+  // Activate a node from the tree: directories navigate (and expand);
+  // files open in a tab if previewable.
+  const activateNode = useCallback((node: FlatNode) => {
+    if (node.isDir) {
+      setExpanded(prev => {
+        const next = new Set(prev)
+        next.add(node.path)
+        return next
+      })
+      loadChildren(node.path)
+      navigateTo(node.path)
+    } else if (isPreviewable(node.name)) {
+      const entry: FileEntry = {
+        name: node.name, path: node.path, isDir: false, size: node.size, modTime: 0,
+      }
+      openTab(entry)
+    }
+  }, [loadChildren, navigateTo, openTab])
+
+  // h: if cursor is on an expanded dir, collapse it; otherwise move the
+  // cursor up the tree. If we are on the "current" root (no bookmark
+  // contains currentPath), shift currentPath up by one segment so the
+  // root itself walks toward /.
+  const goLeft = useCallback(() => {
+    if (cursorIndex < 0) return
+    const node = displayedFlat[cursorIndex]
+    if (!node) return
+    if (node.isDir && expanded.has(node.path)) {
+      setExpanded(prev => {
+        const next = new Set(prev)
+        next.delete(node.path)
+        return next
+      })
+      return
+    }
+    if (node.parentPath) {
+      setCursorPath(node.parentPath)
+      return
+    }
+    // root with no parent in tree
+    if (node.rootKind === 'current') {
+      const parent = parentPath(node.path)
+      if (parent) navigateTo(parent)
+    }
+  }, [cursorIndex, displayedFlat, expanded, navigateTo])
+
+  // Candidates for fuzzy jump: bookmarks + every directory we have ever
+  // listed children for (i.e. dirs the user has visited or expanded).
+  const jumpCandidates = useMemo<string[]>(() => {
+    const set = new Set<string>(bookmarks)
+    for (const path of Object.keys(childrenCache)) set.add(path)
+    for (const kids of Object.values(childrenCache)) {
+      for (const k of kids) {
+        if (k.isDir) set.add(k.path)
+      }
+    }
+    return [...set]
+  }, [bookmarks, childrenCache])
+  const bookmarkSet = useMemo(() => new Set(bookmarks), [bookmarks])
+
   const hasTabs = tabs.length > 0
   const inSplitMode = splitPaths.length > 0
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null
@@ -477,7 +681,6 @@ export default function App() {
 
   const onQueryKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
-      if (queryMode === 'search') setCursorIndex(savedCursorRef.current)
       setActiveFilter('')
       setQuery('')
       setQueryMode(null)
@@ -488,12 +691,16 @@ export default function App() {
       setQueryMode(null)
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setCursorIndex(i => i >= displayedFiles.length - 1 ? -1 : i + 1)
+      if (displayedFlat.length === 0) return
+      const next = Math.min(displayedFlat.length - 1, (cursorIndex < 0 ? -1 : cursorIndex) + 1)
+      setCursorPath(displayedFlat[next].path)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setCursorIndex(i => i <= -1 ? displayedFiles.length - 1 : i - 1)
+      if (displayedFlat.length === 0) return
+      const next = Math.max(0, (cursorIndex < 0 ? displayedFlat.length : cursorIndex) - 1)
+      setCursorPath(displayedFlat[next].path)
     }
-  }, [queryMode, query, displayedFiles.length])
+  }, [queryMode, query, displayedFlat, cursorIndex])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -504,6 +711,10 @@ export default function App() {
         if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); setShowHelp(false) }
         return
       }
+      if (showJump) {
+        // input inside the modal handles keys; nothing here
+        return
+      }
 
       if (e.key === 'Tab') {
         e.preventDefault()
@@ -511,25 +722,33 @@ export default function App() {
         return
       }
 
+      const moveCursor = (delta: number) => {
+        if (displayedFlat.length === 0) return
+        if (cursorIndex < 0) {
+          setCursorPath(displayedFlat[delta > 0 ? 0 : displayedFlat.length - 1].path)
+          return
+        }
+        const next = (cursorIndex + delta + displayedFlat.length) % displayedFlat.length
+        setCursorPath(displayedFlat[next].path)
+      }
+
       switch (e.key) {
         case 'j': case 'ArrowDown':
-          e.preventDefault()
-          setCursorIndex(i => i >= displayedFiles.length - 1 ? -1 : i + 1)
-          return
+          e.preventDefault(); moveCursor(1); return
         case 'k': case 'ArrowUp':
-          e.preventDefault()
-          setCursorIndex(i => i <= -1 ? displayedFiles.length - 1 : i - 1)
+          e.preventDefault(); moveCursor(-1); return
+        case 'g':
+          if (displayedFlat.length > 0) setCursorPath(displayedFlat[0].path)
           return
-        case 'g': setCursorIndex(-1); return
-        case 'G': setCursorIndex(displayedFiles.length - 1); return
+        case 'G':
+          if (displayedFlat.length > 0) setCursorPath(displayedFlat[displayedFlat.length - 1].path)
+          return
         case '/':
           e.preventDefault()
-          savedCursorRef.current = cursorIndex
           setQuery('')
           setQueryMode('search')
           return
         case 'f':
-          savedCursorRef.current = cursorIndex
           setQuery('')
           setQueryMode('filter')
           return
@@ -537,42 +756,55 @@ export default function App() {
           if (!activeSearch) return
           const lq = activeSearch.toLowerCase()
           const dir = e.key === 'n' ? 1 : -1
-          const len = displayedFiles.length
-          let found = -1
+          const len = displayedFlat.length
+          if (len === 0) return
+          const start = cursorIndex < 0 ? (dir === 1 ? -1 : 0) : cursorIndex
           for (let step = 1; step <= len; step++) {
-            const idx = ((cursorIndex === -1 ? (dir === 1 ? -1 : 0) : cursorIndex) + dir * step + len) % len
-            if (displayedFiles[idx]?.name.toLowerCase().includes(lq)) { found = idx; break }
+            const i = ((start + dir * step) % len + len) % len
+            if (displayedFlat[i].name.toLowerCase().includes(lq)) {
+              setCursorPath(displayedFlat[i].path)
+              return
+            }
           }
-          if (found !== -1) setCursorIndex(found)
           return
         }
         case 'v': setViewMode(m => m === 'list' ? 'gallery' : 'list'); return
         case '?': e.preventDefault(); setShowHelp(true); return
+        case ' ': case ';':
+          e.preventDefault()
+          setShowJump(true)
+          return
         case 'o': {
           if (cursorIndex >= 0) {
-            const entry = displayedFiles[cursorIndex]
-            if (entry && isPreviewable(entry.name)) openTab(entry)
+            const node = displayedFlat[cursorIndex]
+            if (node && !node.isDir && isPreviewable(node.name)) {
+              const entry: FileEntry = {
+                name: node.name, path: node.path, isDir: false, size: node.size, modTime: 0,
+              }
+              openTab(entry)
+            }
           }
           return
         }
-        case 'Enter': {
+        case 'Enter': case 'l': case 'ArrowRight':
           e.preventDefault()
-          if (cursorIndex === -1) { navigateUp(); return }
-          const entry = displayedFiles[cursorIndex]
-          if (!entry) return
-          if (entry.isDir) navigateTo(entry.path)
-          else if (isPreviewable(entry.name)) openTab(entry)
-          return
-        }
-        case 'l': case 'ArrowRight':
-          e.preventDefault()
-          if (cursorIndex === -1) navigateUp()
-          else { const entry = displayedFiles[cursorIndex]; if (entry?.isDir) navigateTo(entry.path) }
+          if (cursorIndex < 0) return
+          activateNode(displayedFlat[cursorIndex])
           return
         case 'h': case 'ArrowLeft': case 'Backspace':
           e.preventDefault()
-          navigateUp()
+          goLeft()
           return
+        case 'm': {
+          if (cursorIndex < 0) {
+            toggleBookmark(currentPath)
+            return
+          }
+          const node = displayedFlat[cursorIndex]
+          if (node?.isDir) toggleBookmark(node.path)
+          else toggleBookmark(currentPath)
+          return
+        }
         case 'd':
           if (hasTabs && activeTabPath) closeTab(activeTabPath)
           return
@@ -589,15 +821,17 @@ export default function App() {
           setMdFontSize(s => Math.max(10, s - 1))
           return
         case 'Escape':
-          if (focusMode) { setFocusMode(false) }
+          if (focusMode) setFocusMode(false)
           else if (inSplitMode) setSplitPaths([])
-          else setCursorIndex(-1)
+          else if (activeFilter) setActiveFilter('')
           return
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hasTabs, inSplitMode, focusMode, activeTabPath, showHelp, cursorIndex, displayedFiles, activeFilter, activeSearch, openTab, closeTab, toggleSplit, cycleTab, navigateUp, navigateTo, tabs, mdFontSize])
+  }, [hasTabs, inSplitMode, focusMode, activeTabPath, showHelp, showJump, cursorIndex, displayedFlat, activeFilter, activeSearch, currentPath, openTab, closeTab, toggleSplit, cycleTab, activateNode, goLeft, toggleBookmark])
+
+  const galleryFiles = (childrenCache[currentPath] ?? []).filter(f => !f.isDir && isImage(f.name))
 
   return (
     <div className={styles.app}>
@@ -605,6 +839,7 @@ export default function App() {
         <span className={styles.logo}>ssh-open</span>
         <Breadcrumb path={currentPath} onNavigate={navigateTo} />
         <span className={`${styles.flash} ${flashPath ? styles.flashActive : ''}`}>↺</span>
+        <button className={styles.helpBtn} onClick={() => setShowJump(true)} title="Jump (Space or ;)">⤳</button>
         <div className={styles.viewToggle}>
           <button className={viewMode === 'list' ? styles.active : ''} onClick={() => setViewMode('list')} title="List view (v)">≡</button>
           <button className={viewMode === 'gallery' ? styles.active : ''} onClick={() => setViewMode('gallery')} title="Gallery view (v)">⊞</button>
@@ -641,7 +876,6 @@ export default function App() {
                   <button
                     className={styles.queryClose}
                     onClick={() => {
-                      if (queryMode === 'search') setCursorIndex(savedCursorRef.current)
                       setActiveFilter('')
                       setQuery('')
                       setQueryMode(null)
@@ -659,41 +893,64 @@ export default function App() {
                   >✕</button>
                 </div>
               )}
-              <div
-                ref={upRowRef}
-                className={`${styles.fileRow} ${styles.dirRow} ${cursorIndex === -1 ? styles.cursorRow : ''}`}
-                onClick={navigateUp}
-              >
-                <span className={styles.iconDir}>▲</span>
-                <span className={styles.fileName}>..</span>
-              </div>
-              {displayedFiles.map((f, i) => (
-                <div
-                  key={f.path}
-                  ref={el => { rowRefs.current[i] = el }}
-                  className={[
-                    styles.fileRow,
-                    f.isDir ? styles.dirRow : '',
-                    tabs.some(t => t.path === f.path) ? styles.openRow : '',
-                    activeTabPath === f.path ? styles.selectedRow : '',
-                    cursorIndex === i ? styles.cursorRow : '',
-                  ].join(' ')}
-                  onClick={() => f.isDir ? navigateTo(f.path) : isPreviewable(f.name) ? openTab(f) : null}
-                >
-                  <FileIcon entry={f} />
-                  <span className={styles.fileName}>
-                    <HighlightMatch text={f.name} query={highlightQuery} />
-                  </span>
-                  {!f.isDir && <span className={styles.fileSize}>{formatSize(f.size)}</span>}
+              {bookmarks.length === 0 && (
+                <div className={styles.bookmarksHint}>
+                  <span>★ <kbd>m</kbd> でディレクトリをブックマーク、<kbd>Space</kbd> で fuzzy ジャンプ</span>
                 </div>
-              ))}
+              )}
+              {displayedFlat.length === 0 && (
+                <div className={styles.emptyHint}>表示できる項目がありません</div>
+              )}
+              {displayedFlat.map(n => {
+                const inTab = tabs.some(t => t.path === n.path)
+                const isActiveTab = activeTabPath === n.path
+                const isCursor = cursorPath === n.path
+                const isCurrent = currentPath === n.path && n.isDir
+                const isBookmark = bookmarkSet.has(n.path)
+                return (
+                  <div
+                    key={n.path}
+                    ref={el => { rowRefs.current[n.path] = el }}
+                    className={[
+                      styles.fileRow,
+                      n.isDir ? styles.dirRow : '',
+                      n.rootKind ? styles.rootRow : '',
+                      inTab ? styles.openRow : '',
+                      isActiveTab ? styles.selectedRow : '',
+                      isCursor ? styles.cursorRow : '',
+                      isCurrent ? styles.currentDirRow : '',
+                    ].join(' ')}
+                    style={{ paddingLeft: 8 + n.depth * 14 }}
+                    title={n.path}
+                    onClick={() => {
+                      if (n.isDir) {
+                        toggleExpand(n.path)
+                        navigateTo(n.path)
+                      } else if (isPreviewable(n.name)) {
+                        const entry: FileEntry = {
+                          name: n.name, path: n.path, isDir: false, size: n.size, modTime: 0,
+                        }
+                        openTab(entry)
+                      }
+                      setCursorPath(n.path)
+                    }}
+                  >
+                    <NodeIcon node={n} />
+                    <span className={styles.fileName}>
+                      <HighlightMatch text={n.name} query={highlightQuery} />
+                      {isBookmark && n.rootKind !== 'bookmark' && <span className={styles.bookmarkBadge}>★</span>}
+                    </span>
+                    {!n.isDir && <span className={styles.fileSize}>{formatSize(n.size)}</span>}
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div className={styles.gallery}>
-              {imageFiles.length === 0 ? (
+              {galleryFiles.length === 0 ? (
                 <p className={styles.empty}>No images</p>
               ) : (
-                imageFiles.map(f => (
+                galleryFiles.map(f => (
                   <div
                     key={f.path}
                     className={`${styles.thumb} ${tabs.some(t => t.path === f.path) ? styles.thumbSelected : ''}`}
@@ -748,6 +1005,18 @@ export default function App() {
       </div>
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {showJump && (
+        <JumpModal
+          candidates={jumpCandidates}
+          bookmarkSet={bookmarkSet}
+          frecency={frecency}
+          onClose={() => setShowJump(false)}
+          onPick={(p) => {
+            setShowJump(false)
+            navigateTo(p)
+          }}
+        />
+      )}
     </div>
   )
 }

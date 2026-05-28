@@ -13,7 +13,7 @@ import {
 } from './storage'
 import {
   type FileEntry, type FlatNode,
-  parentPath, containingBookmark, ancestorsBetween,
+  parentPath,
   flattenTree, fuzzyScore, filterFlat,
 } from './tree'
 
@@ -99,9 +99,9 @@ const HELP_ROWS: [string, string][] = [
   ['f', 'フィルター（マッチのみ表示、Enter確定/Escクリア）'],
   ['l / → / Enter', '(ディレクトリ) 展開して中に入る'],
   ['h / ← / BS', '(展開中ディレクトリ) 折りたたむ / それ以外は親へ'],
-  ['o', 'ファイルをタブで開く'],
-  ['m', 'カーソル位置のディレクトリをブックマーク/解除'],
-  ['Space / ;', 'ブックマーク/訪問先へ fuzzy ジャンプ'],
+  ['o', '(ディレクトリ) 展開/折りたたみ / (ファイル) 右に表示'],
+  ['m', 'カーソル位置のディレクトリをお気に入り登録/解除'],
+  ['Space / ;', 'お気に入りへ fuzzy ジャンプ（カレントルートに設定）'],
   ['v', 'リスト / ギャラリー切り替え'],
   ['Tab / Shift+Tab', '(タブあり) 次 / 前のタブへ'],
   ['d', '(タブあり) 今のタブを閉じる'],
@@ -381,7 +381,7 @@ function JumpModal({ candidates, bookmarkSet, frecency, onPick, onClose }: JumpM
           value={q}
           onChange={e => setQ(e.target.value)}
           onKeyDown={onKey}
-          placeholder="ディレクトリを fuzzy 検索…"
+          placeholder="お気に入りを検索…"
         />
         <div className={styles.jumpList}>
           {ranked.length === 0 ? (
@@ -479,15 +479,13 @@ export default function App() {
   // expanded and have children loaded. Returns when all fetches finish.
   const expandToPath = useCallback(async (path: string) => {
     if (!path) return
-    const root = containingBookmark(path, bookmarks) ?? path
-    const chain = ancestorsBetween(root, path)
     setExpanded(prev => {
       const next = new Set(prev)
-      for (const a of chain) next.add(a)
+      next.add(path)
       return next
     })
-    await Promise.all(chain.map(loadChildren))
-  }, [bookmarks, loadChildren])
+    await loadChildren(path)
+  }, [loadChildren])
 
   const navigateTo = useCallback((path: string) => {
     setCurrentPath(path)
@@ -660,18 +658,6 @@ export default function App() {
     }
   }, [cursorIndex, displayedFlat, expanded, navigateTo])
 
-  // Candidates for fuzzy jump: bookmarks + every directory we have ever
-  // listed children for (i.e. dirs the user has visited or expanded).
-  const jumpCandidates = useMemo<string[]>(() => {
-    const set = new Set<string>(bookmarks)
-    for (const path of Object.keys(childrenCache)) set.add(path)
-    for (const kids of Object.values(childrenCache)) {
-      for (const k of kids) {
-        if (k.isDir) set.add(k.path)
-      }
-    }
-    return [...set]
-  }, [bookmarks, childrenCache])
   const bookmarkSet = useMemo(() => new Set(bookmarks), [bookmarks])
 
   const hasTabs = tabs.length > 0
@@ -728,7 +714,7 @@ export default function App() {
           setCursorPath(displayedFlat[delta > 0 ? 0 : displayedFlat.length - 1].path)
           return
         }
-        const next = (cursorIndex + delta + displayedFlat.length) % displayedFlat.length
+        const next = Math.max(0, Math.min(displayedFlat.length - 1, cursorIndex + delta))
         setCursorPath(displayedFlat[next].path)
       }
 
@@ -777,11 +763,11 @@ export default function App() {
         case 'o': {
           if (cursorIndex >= 0) {
             const node = displayedFlat[cursorIndex]
-            if (node && !node.isDir && isPreviewable(node.name)) {
-              const entry: FileEntry = {
-                name: node.name, path: node.path, isDir: false, size: node.size, modTime: 0,
-              }
-              openTab(entry)
+            if (!node) return
+            if (node.isDir) {
+              toggleExpand(node.path)
+            } else if (isPreviewable(node.name)) {
+              openTab({ name: node.name, path: node.path, isDir: false, size: node.size, modTime: 0 })
             }
           }
           return
@@ -895,7 +881,7 @@ export default function App() {
               )}
               {bookmarks.length === 0 && (
                 <div className={styles.bookmarksHint}>
-                  <span>★ <kbd>m</kbd> でディレクトリをブックマーク、<kbd>Space</kbd> で fuzzy ジャンプ</span>
+                  <span><kbd>m</kbd> でお気に入り登録 → <kbd>Space</kbd> で検索してジャンプ</span>
                 </div>
               )}
               {displayedFlat.length === 0 && (
@@ -925,12 +911,8 @@ export default function App() {
                     onClick={() => {
                       if (n.isDir) {
                         toggleExpand(n.path)
-                        navigateTo(n.path)
                       } else if (isPreviewable(n.name)) {
-                        const entry: FileEntry = {
-                          name: n.name, path: n.path, isDir: false, size: n.size, modTime: 0,
-                        }
-                        openTab(entry)
+                        openTab({ name: n.name, path: n.path, isDir: false, size: n.size, modTime: 0 })
                       }
                       setCursorPath(n.path)
                     }}
@@ -1007,7 +989,7 @@ export default function App() {
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       {showJump && (
         <JumpModal
-          candidates={jumpCandidates}
+          candidates={bookmarks}
           bookmarkSet={bookmarkSet}
           frecency={frecency}
           onClose={() => setShowJump(false)}

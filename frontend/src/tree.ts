@@ -121,11 +121,7 @@ export function flattenTree({ bookmarks, currentPath, expanded, children }: Flat
     }
   }
 
-  for (const bm of bookmarks) {
-    pushSubtree(bm, 0, null, 'bookmark')
-  }
-
-  if (currentPath && !containingBookmark(currentPath, bookmarks)) {
+  if (currentPath) {
     pushSubtree(currentPath, 0, null, 'current')
   }
 
